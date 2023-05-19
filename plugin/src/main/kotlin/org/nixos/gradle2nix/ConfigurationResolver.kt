@@ -5,6 +5,7 @@ import org.apache.ivy.core.settings.IvySettings
 import org.apache.ivy.plugins.parser.m2.PomReader
 import org.apache.ivy.plugins.parser.xml.XmlModuleDescriptorParser
 import org.apache.ivy.plugins.repository.url.URLResource
+import org.apache.ivy.plugins.repository.file.FileRepository
 import org.apache.ivy.plugins.resolver.ChainResolver
 import org.gradle.api.Project
 import org.gradle.api.artifacts.Configuration
@@ -69,23 +70,55 @@ internal class ConfigurationResolver(
     fun resolve(configuration: Configuration): List<DefaultArtifact> {
         val resolved = configuration.resolvedConfiguration.lenientConfiguration
 
-        failed.addAll(resolved.unresolvedModuleDependencies.map {
-            DefaultArtifactIdentifier(
-                group = it.selector.group,
-                name = it.selector.name,
-                version = it.selector.version ?: "",
-                type = "module"
-            )
-        })
-
         val topLevelMetadata = resolved.firstLevelModuleDependencies
             .flatMap { resolveMetadata(it.moduleGroup, it.moduleName, it.moduleVersion) }
+
+        val reresolvedArtifacts = resolved.unresolvedModuleDependencies.flatMap {
+            listOf(
+                DefaultArtifactIdentifier(
+                    group = it.selector.group,
+                    name = it.selector.name,
+                    version = it.selector.version ?: "",
+                    type = "module"
+                ),
+                DefaultArtifactIdentifier(
+                    group = it.selector.group,
+                    name = it.selector.name,
+                    version = it.selector.version ?: "",
+                    type = "pom"
+                ),
+                DefaultArtifactIdentifier(
+                    group = it.selector.group,
+                    name = it.selector.name,
+                    version = it.selector.version ?: "",
+                    type = "jar"
+                ),
+            )
+        }
+        .flatMap { 
+            val metadata = if (it.type == "pom") {
+                resolveMetadata(it.group, it.name, it.version)
+            } else {
+                listOf()
+            }
+            metadata + resolvers.mapNotNull{ resolver -> 
+                resolver.resolve(it).also { resolvedArtifact ->
+                    if (resolvedArtifact == null) {
+                        failed.add(it)
+                    }
+                }
+            } 
+        }
+
+        println("unresolved artifacts: " + failed)
+        println("metadata: " + topLevelMetadata)
+        println("resolved artifacts: " + resolved.artifacts)
 
         val allArtifacts = resolved.artifacts
             .filter { it.id.componentIdentifier is ModuleComponentIdentifier }
             .flatMap(::resolve)
 
-        return (topLevelMetadata + allArtifacts).filter { it.urls.isNotEmpty() }
+        return (topLevelMetadata + allArtifacts + reresolvedArtifacts).filter { it.urls.isNotEmpty() }
     }
 
     private fun resolve(resolvedArtifact: ResolvedArtifact): List<DefaultArtifact> {
@@ -96,7 +129,7 @@ internal class ConfigurationResolver(
             name = componentId.module,
             version = componentId.version,
             type = resolvedArtifact.type,
-            extension = resolvedArtifact.extension,
+            extension = resolvedArtifact.extension ?: "",
             classifier = resolvedArtifact.classifier
         )
 
@@ -137,8 +170,14 @@ internal class ConfigurationResolver(
                     version = componentId.version,
                     type = "pom"
                 )
+                val artifactIdJar = DefaultArtifactIdentifier(
+                    group = componentId.group,
+                    name = componentId.module,
+                    version = componentId.version,
+                    type = "jar"
+                )
                 // Intentionally not computing hash from the cached result; see ResolvedArtifact.computeHash() below.
-                val artifacts = resolvers.mapNotNull { it.resolve(artifactId) }.merge()
+                val artifacts = resolvers.mapNotNull { it.resolve(artifactId) }.merge() + resolvers.mapNotNull { it.resolve(artifactIdJar) }.merge() 
                 if (artifacts.isEmpty()) failed.add(artifactId)
                 artifacts
             }

@@ -9,7 +9,7 @@ private const val HEX = "0123456789abcdef"
 
 internal fun File.sha256(): String = readBytes().sha256()
 
-private fun ByteArray.sha256() = buildString {
+internal fun ByteArray.sha256() = buildString {
     MessageDigest.getInstance("SHA-256").digest(this@sha256)
         .asSequence()
         .map(Byte::toInt)

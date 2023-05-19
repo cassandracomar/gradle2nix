@@ -22,11 +22,15 @@ let
         src = ./.;
       };
     };
+    buildJdk = pkgs.jdk17;
 
     gradleFlags = [ "installDist" ];
+    enableParallelBuilding = true;
 
     installPhase = ''
       mkdir -p $out
+      sed -i "s/DEFAULT_JVM_OPTS='\(.*\)'/DEFAULT_JVM_OPTS=\1/" app/build/install/gradle2nix/bin/gradle2nix
+
       cp -r app/build/install/gradle2nix/* $out/
     '';
 

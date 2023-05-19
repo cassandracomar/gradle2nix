@@ -6,6 +6,7 @@ import org.gradle.api.Project
 import org.gradle.api.Task
 import org.gradle.api.artifacts.Configuration
 import org.gradle.api.artifacts.ProjectDependency
+import org.gradle.api.artifacts.repositories.ArtifactRepository
 import org.gradle.api.internal.GradleInternal
 import org.gradle.api.internal.artifacts.repositories.ResolutionAwareRepository
 import org.gradle.api.invocation.Gradle
@@ -15,27 +16,36 @@ import org.gradle.kotlin.dsl.getByName
 import org.gradle.kotlin.dsl.newInstance
 import org.gradle.kotlin.dsl.support.serviceOf
 import org.gradle.kotlin.dsl.withType
+import org.gradle.kotlin.dsl.repositories
 import org.gradle.plugin.management.PluginRequest
 import org.gradle.tooling.provider.model.ToolingModelBuilder
 import org.gradle.tooling.provider.model.ToolingModelBuilderRegistry
 import org.gradle.util.GradleVersion
 import java.net.URL
 import java.util.*
+import java.nio.file.Files
+import java.io.File
+import java.io.FileOutputStream
 
 @Suppress("unused")
 open class Gradle2NixPlugin : Plugin<Gradle> {
     override fun apply(gradle: Gradle): Unit = gradle.run {
         val pluginRequests = collectPlugins()
+        val pluginRepos = mutableListOf<ArtifactRepository>()
+        gradle.settingsEvaluated {
+            pluginRepos.addAll(buildscript.repositories)
+            pluginRepos.addAll(pluginManagement.repositories)
+        }
 
         projectsLoaded {
             val modelProperties = rootProject.loadModelProperties()
             rootProject.serviceOf<ToolingModelBuilderRegistry>()
-                .register(NixToolingModelBuilder(modelProperties, pluginRequests))
+                .register(NixToolingModelBuilder(modelProperties, pluginRequests, pluginRepos))
 
             rootProject.tasks.registerCompat("nixModel") {
                 doLast {
                     val outFile = project.mkdir(project.buildDir.resolve("nix")).resolve("model.json")
-                    val model = project.buildModel(modelProperties, pluginRequests)
+                    val model = project.buildModel(modelProperties, pluginRequests, pluginRepos)
                     outFile.bufferedWriter().use { out ->
                         out.write(
                             Moshi.Builder().build()
@@ -61,23 +71,23 @@ private fun TaskContainer.registerCompat(name: String, configureAction: Task.() 
 
 private class NixToolingModelBuilder(
     private val modelProperties: ModelProperties,
-    private val pluginRequests: List<PluginRequest>
+    private val pluginRequests: List<PluginRequest>,
+    private val pluginRepos: List<ArtifactRepository>,
 ) : ToolingModelBuilder {
     override fun canBuild(modelName: String): Boolean {
         return modelName == NIX_MODEL_NAME
     }
 
     override fun buildAll(modelName: String, project: Project): Build =
-        project.buildModel(modelProperties, pluginRequests)
+        project.buildModel(modelProperties, pluginRequests, pluginRepos)
 }
 
 private fun Gradle.collectPlugins(): List<PluginRequest> {
     val pluginRequests = mutableListOf<PluginRequest>()
     gradle.settingsEvaluated {
         pluginManagement.resolutionStrategy.eachPlugin {
-            if (requested.id.namespace != null && requested.id.namespace != "org.gradle") {
-                pluginRequests.add(target)
-            }
+            println(target)
+            pluginRequests.add(target)
         }
     }
     return pluginRequests
@@ -85,10 +95,12 @@ private fun Gradle.collectPlugins(): List<PluginRequest> {
 
 private fun Project.buildModel(
     modelProperties: ModelProperties,
-    pluginRequests: List<PluginRequest>
+    pluginRequests: List<PluginRequest>,
+    pluginRepos: List<ArtifactRepository>,
 ): DefaultBuild {
     val settingsDependencies = settingsDependencies()
-    val plugins = buildPlugins(pluginRequests)
+    val plugins = buildPlugins(pluginRequests, pluginRepos)
+    println("resolved plugins: " + plugins)
 
     val subprojects = if (modelProperties.subprojects.isEmpty()) {
         project.subprojects
@@ -143,6 +155,15 @@ private fun Project.settingsDependencies(): List<DefaultArtifact> {
     logger.lifecycle("    Settings script")
 
     val dependencies = buildscript.configurations
+        .flatMap { configuration -> 
+            configuration.allDependencies.map { dependency -> 
+                 buildscript.configurations.detachedConfiguration(*listOf(dependency).toTypedArray()).apply {
+                    resolutionStrategy.disableDependencyVerification()
+                    shouldResolveConsistentlyWith(configuration)
+                    dependencyConstraints.addAll(buildscript.configurations.flatMap { it.allDependencyConstraints })
+                 }
+            } 
+        }
         .flatMap(resolver::resolve)
         .distinct()
         .sorted()
@@ -159,8 +180,11 @@ private fun Project.settingsDependencies(): List<DefaultArtifact> {
     return dependencies
 }
 
-private fun Project.buildPlugins(pluginRequests: List<PluginRequest>): List<DefaultArtifact> {
-    return objects.newInstance<PluginResolver>(this).resolve(pluginRequests).distinct().sorted()
+private fun Project.buildPlugins(pluginRequests: List<PluginRequest>, pluginRepos: List<ArtifactRepository>): List<DefaultArtifact> {
+    val plugins = mutableListOf<DefaultArtifact>()
+    plugins.addAll(objects.newInstance<PluginResolver>(this, pluginRepos).resolve(pluginRequests).distinct().sorted())
+
+    return plugins
 }
 
 private fun Project.includedBuilds(): List<DefaultIncludedBuild> =
@@ -221,6 +245,15 @@ private fun Project.buildscriptDependencies(
     val resolver = resolverFactory.create(buildscript.dependencies)
     val pluginIds = pluginArtifacts.map(DefaultArtifact::id)
     return buildscript.configurations
+        .flatMap { configuration -> 
+            configuration.allDependencies.map { dependency -> 
+                 buildscript.configurations.detachedConfiguration(*listOf(dependency).toTypedArray()).apply {
+                    resolutionStrategy.disableDependencyVerification()
+                    shouldResolveConsistentlyWith(configuration)
+                    dependencyConstraints.addAll(buildscript.configurations.flatMap { it.allDependencyConstraints })
+                 }
+            } 
+        }
         .flatMap(resolver::resolve)
         .distinct()
         .filter { it.id !in pluginIds }
@@ -236,6 +269,16 @@ private fun Project.projectDependencies(
         RepositoriesCollector.create(project).collectRepositories()
     ).create(dependencies)
     return collectConfigurations(explicitConfigurations)
+        .flatMap { configuration -> 
+            configuration.allDependencies.map { dependency ->
+                 configurations.detachedConfiguration(*listOf(dependency).toTypedArray()).apply {
+                    setTransitive(true)
+                    resolutionStrategy.disableDependencyVerification()
+                    shouldResolveConsistentlyWith(configuration)
+                    dependencyConstraints.addAll(configurations.flatMap { it.allDependencyConstraints })
+                 }
+            }
+        }
         .flatMap(resolver::resolve)
         .distinct()
         .sorted() to resolver.unresolved
@@ -261,9 +304,9 @@ private fun Project.collectConfigurations(
 }
 
 private fun fetchDistSha256(url: String): String {
-    return URL("$url.sha256").openConnection().run {
+    return URL(url).openConnection().run {
         connect()
-        getInputStream().reader().use { it.readText() }
+        getInputStream().readAllBytes().sha256()
     }
 }
 
@@ -271,12 +314,7 @@ private val nativePlatformJarRegex = Regex("""native-platform-([\d.]+(-(alpha|be
 
 private val Wrapper.sha256: String
     get() {
-        return if (GradleVersion.current() < GradleVersion.version("4.5")) {
-            fetchDistSha256(distributionUrl)
-        } else {
-            @Suppress("UnstableApiUsage")
-            distributionSha256Sum ?: fetchDistSha256(distributionUrl)
-        }
+        return fetchDistSha256(distributionUrl)
     }
 
 private const val NIX_MODEL_NAME = "org.nixos.gradle2nix.Build"

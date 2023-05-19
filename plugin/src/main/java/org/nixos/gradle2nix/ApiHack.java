@@ -1,9 +1,8 @@
 package org.nixos.gradle2nix;
 
 import org.gradle.api.artifacts.Dependency;
+import org.gradle.internal.impldep.javax.annotation.Nullable;
 import org.gradle.api.internal.artifacts.dependencies.DefaultExternalModuleDependency;
-
-import javax.annotation.Nullable;
 
 /**
  * Workarounds for APIs improperly marked with @NonNullApi.

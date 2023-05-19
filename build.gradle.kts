@@ -1,5 +1,6 @@
 plugins {
     base
+    id("eclipse")
 }
 
 group = "org.nixos.gradle2nix"
@@ -11,6 +12,13 @@ subprojects {
 }
 
 allprojects {
+    apply(plugin = "eclipse")
+    eclipse {
+        classpath {
+            isDownloadJavadoc = true
+            isDownloadSources = true
+        }
+    }
     plugins.withType<JavaBasePlugin> {
         this@allprojects.withConvention(JavaPluginConvention::class) {
             sourceSets.all {
@@ -40,7 +48,7 @@ allprojects {
 
 tasks {
     wrapper {
-        gradleVersion = "6.8.1"
-        distributionType = Wrapper.DistributionType.ALL
+        gradleVersion = "8.0.1"
+        distributionType = Wrapper.DistributionType.BIN
     }
 }

@@ -1,7 +1,5 @@
-buildscript {
-    configurations.classpath {
-        resolutionStrategy.activateDependencyLocking()
-    }
+buildscript { 
+    configurations.classpath { resolutionStrategy.activateDependencyLocking() } 
 }
 
 plugins {
@@ -10,21 +8,11 @@ plugins {
     id("org.ajoberstar.stutter")
 }
 
-sourceSets {
-    test {
-        java.srcDir("src/test/kotlin")
-    }
-}
+sourceSets { test { java.srcDir("src/test/kotlin") } }
 
-dependencyLocking {
-    lockAllConfigurations()
-}
+dependencyLocking { lockAllConfigurations() }
 
-configurations {
-    compile {
-        dependencies.remove(project.dependencies.gradleApi())
-    }
-}
+configurations.create("compile") { dependencies.remove(project.dependencies.gradleApi()) }
 
 dependencies {
     compileOnly("org.gradle:gradle-tooling-api:${gradle.gradleVersion}")
@@ -32,6 +20,8 @@ dependencies {
     implementation(project(":ivy"))
     implementation(project(":model"))
     shadow(gradleApi())
+    implementation("org.apache.maven:maven-bom:latest.release")
+    implementation("org.jetbrains.kotlin:kotlin-bom:1.8.21")
 
     compatTestImplementation("com.adobe.testing:s3mock-junit5:latest.release")
     compatTestImplementation("com.squareup.okio:okio:latest.release")
@@ -47,6 +37,7 @@ dependencies {
     compatTestImplementation(project(":model"))
     compatTestRuntimeOnly("org.junit.jupiter:junit-jupiter-engine:latest.release")
     compatTestRuntimeOnly("org.junit.platform:junit-platform-launcher:latest.release")
+    intransitiveDependenciesMetadata("org.junit:junit-bom:5.9.1@pom")
 }
 
 gradlePlugin {
@@ -60,35 +51,25 @@ gradlePlugin {
     }
 }
 
-kotlinDslPluginOptions {
-    experimentalWarning.set(false)
-}
-
-stutter {
-    isSparse = true
-    java(8) {
-        compatibleRange("4.4")
-    }
-    java(11) {
-        compatibleRange("5.0")
-    }
-}
-
 tasks {
-    pluginUnderTestMetadata {
-        pluginClasspath.setFrom(files(shadowJar))
-    }
+    pluginUnderTestMetadata { pluginClasspath.setFrom(files(shadowJar)) }
 
     withType<Test> {
-        useJUnitPlatform {
-            includeEngines("junit-jupiter")
-        }
+        useJUnitPlatform { includeEngines("junit-jupiter") }
 
         // Default logging config exposes a classpath conflict between
         // the Gradle API and SFL4J.
         // (Sprint Boot is used in S3Mock)
-        systemProperty("org.springframework.boot.logging.LoggingSystem", "org.springframework.boot.logging.java.JavaLoggingSystem")
+        systemProperty(
+                "org.springframework.boot.logging.LoggingSystem",
+                "org.springframework.boot.logging.java.JavaLoggingSystem"
+        )
 
         systemProperty("fixtures", "$rootDir/fixtures")
+    }
+
+    withType<JavaCompile> {
+        sourceCompatibility = "17"
+        targetCompatibility = "17"
     }
 }
